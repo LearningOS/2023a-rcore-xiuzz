@@ -14,9 +14,10 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
-use crate::config::MAX_APP_NUM;
+use crate::config::{MAX_APP_NUM,MAX_SYSCALL_NUM};
 use crate::loader::{get_num_app, init_app_cx};
 use crate::sync::UPSafeCell;
+use crate::timer::get_time_ms;
 use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
@@ -54,6 +55,9 @@ lazy_static! {
         let mut tasks = [TaskControlBlock {
             task_cx: TaskContext::zero_init(),
             task_status: TaskStatus::UnInit,
+            task_syscall_times: [0; MAX_SYSCALL_NUM],
+            task_first_scheduling: 0,
+            task_begin_mark: false,
         }; MAX_APP_NUM];
         for (i, task) in tasks.iter_mut().enumerate() {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
@@ -79,6 +83,10 @@ impl TaskManager {
     fn run_first_task(&self) -> ! {
         let mut inner = self.inner.exclusive_access();
         let task0 = &mut inner.tasks[0];
+        if !task0.task_begin_mark {
+            task0.task_begin_mark = true;
+            task0.task_first_scheduling = get_time_ms();
+        }
         task0.task_status = TaskStatus::Running;
         let next_task_cx_ptr = &task0.task_cx as *const TaskContext;
         drop(inner);
@@ -123,8 +131,14 @@ impl TaskManager {
             let current = inner.current_task;
             inner.tasks[next].task_status = TaskStatus::Running;
             inner.current_task = next;
+            let next_task_bloack = &mut inner.tasks[next];
+            if !next_task_bloack.task_begin_mark {
+                next_task_bloack.task_begin_mark = true;
+                next_task_bloack.task_first_scheduling = get_time_ms();
+            }
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
+            
             drop(inner);
             // before this, we should drop local variables that must be dropped manually
             unsafe {
@@ -134,7 +148,43 @@ impl TaskManager {
         } else {
             panic!("All applications completed!");
         }
+    }   
+
+    /// current syscall ++ 
+    fn cnt_cursyscall_times(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].task_syscall_times[syscall_id] += 1;
     }
+    
+    /// get total syscall times
+    fn get_cursyscall_times(&self) -> [u32; MAX_SYSCALL_NUM] {
+        let  inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].task_syscall_times.clone()
+    }
+
+    /// get first scheduling 
+    fn get_first_scheduling(&self) -> usize {
+        let  inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].task_first_scheduling
+    }
+
+}
+/// public current syscall ++
+pub fn cnt_cursyscall_times(syscall_id: usize) {
+    TASK_MANAGER.cnt_cursyscall_times(syscall_id);
+}
+
+/// public get syscall 
+pub fn get_cursyscall_times() -> [u32; MAX_SYSCALL_NUM]{
+    TASK_MANAGER.get_cursyscall_times()
+}
+
+/// public get first time
+pub fn get_first_scheduling() -> usize {
+    TASK_MANAGER.get_first_scheduling()
 }
 
 /// Run the first task in task list.
