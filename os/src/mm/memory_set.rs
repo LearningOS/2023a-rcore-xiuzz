@@ -8,6 +8,7 @@ use crate::config::{
     KERNEL_STACK_SIZE, MEMORY_END, PAGE_SIZE, TRAMPOLINE, TRAP_CONTEXT_BASE, USER_STACK_SIZE,
 };
 use crate::sync::UPSafeCell;
+use crate::task::TASK_MANAGER;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -262,6 +263,24 @@ impl MemorySet {
             false
         }
     }
+    /// dealloc the sys get mum
+    pub fn dealloc(&mut self, start_vpn: VirtPageNum, end_vpn: VirtPageNum){
+        let mut mark = self.areas.len();
+        let mut cnt = 0;
+        for i in &self.areas {
+            if (*i).vpn_range.get_start() == start_vpn && (*i).vpn_range.get_end() == end_vpn {
+                mark = cnt; 
+                break;
+            }
+            cnt += 1;
+        }
+        if mark == self.areas.len() {
+            return;
+        }
+        let area = &mut self.areas[mark];
+        area.unmap(&mut self.page_table);
+        self.areas.remove(mark);
+    }
 }
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {
@@ -367,7 +386,8 @@ pub enum MapType {
 
 bitflags! {
     /// map permission corresponding to that in pte: `R W X U`
-    pub struct MapPermission: u8 {
+    pub struct 
+    MapPermission: u8 {
         ///Readable
         const R = 1 << 1;
         ///Writable
@@ -410,3 +430,51 @@ pub fn remap_test() {
         .executable(),);
     println!("remap_test passed!");
 }
+///mmap for curtask
+pub fn mm_sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
+    let start_va = VirtAddr::from(_start);
+    let end_va = VirtAddr::from(_start + _len);
+
+    let start_vpn = start_va.floor();
+    let end_vpn = end_va.ceil();
+
+    let end_va = VirtAddr::from(end_vpn);
+
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+
+    let memory_set_ref_mut = &mut inner.tasks[current].memory_set;
+
+    if (start_vpn.0..end_vpn.0).any(|e| memory_set_ref_mut.page_table.is_mapped(VirtPageNum::from(e))) {
+        return -1;
+    }
+
+    let flag = MapPermission::from_bits((_port << 1 | 16) as u8).unwrap(); //xwru
+
+    memory_set_ref_mut.insert_framed_area(start_va, end_va, flag);
+
+    0
+}
+
+///mumap for curtask
+pub fn mm_sys_munmap(_start: usize, _len : usize) -> isize {
+    let start_va = VirtAddr::from(_start);
+    let end_va = VirtAddr::from(_start + _len);
+
+    let start_vpn = start_va.floor();
+    let end_vpn = end_va.ceil();
+
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+
+    let current = inner.current_task;
+
+    let memory_set_ref_mut = &mut inner.tasks[current].memory_set;
+
+
+    if (start_vpn.0..end_vpn.0).any(|e| memory_set_ref_mut.page_table.is_mapped(VirtPageNum::from(e))) {
+        return -1;
+    }
+
+    memory_set_ref_mut.dealloc(start_vpn, end_vpn);
+    0
+}   

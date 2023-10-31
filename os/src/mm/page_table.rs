@@ -1,6 +1,6 @@
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
 
-use super::{frame_alloc, FrameTracker, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
+use super::{frame_alloc, FrameTracker, PhysPageNum, StepByOne, VirtAddr, VirtPageNum, PhysAddr};
 use alloc::vec;
 use alloc::vec::Vec;
 use bitflags::*;
@@ -147,6 +147,19 @@ impl PageTable {
     pub fn token(&self) -> usize {
         8usize << 60 | self.root_ppn.0
     }
+
+    ///get the pa by va
+    pub fn get_pa_by_va (&self, va:VirtAddr) -> Option<PhysAddr> {
+        let vpn = va.clone().floor();
+        self.find_pte(vpn).map(|pte| {
+            let pa : PhysAddr= pte.ppn().into();
+            (pa.0 + va.page_offset()).into()
+        })
+    }
+    ///
+    pub fn is_mapped(&self, vpn: VirtPageNum) -> bool {
+        self.find_pte(vpn).is_some() && self.find_pte(vpn).unwrap().is_valid()
+    }
 }
 
 /// Translate&Copy a ptr[u8] array with LENGTH len to a mutable u8 Vec through page table
@@ -170,4 +183,9 @@ pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&
         start = end_va.into();
     }
     v
+}
+/// get phyaddress ref
+pub fn translated_ref_mut<T> (token: usize, ptr: *mut T) -> &'static mut T {
+    let page_table = PageTable::from_token(token);
+    page_table.get_pa_by_va(VirtAddr::from(ptr as usize)).unwrap().get_mut()
 }

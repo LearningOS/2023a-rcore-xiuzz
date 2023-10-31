@@ -13,9 +13,10 @@ mod context;
 mod switch;
 #[allow(clippy::module_inception)]
 mod task;
-
+use crate::config::MAX_SYSCALL_NUM;
 use crate::loader::{get_app_data, get_num_app};
 use crate::sync::UPSafeCell;
+use crate::timer::get_time_ms;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
 use lazy_static::*;
@@ -37,15 +38,15 @@ pub struct TaskManager {
     /// total number of tasks
     num_app: usize,
     /// use inner value to get mutable access
-    inner: UPSafeCell<TaskManagerInner>,
+    pub(crate) inner: UPSafeCell<TaskManagerInner>,
 }
 
 /// The task manager inner in 'UPSafeCell'
-struct TaskManagerInner {
+pub struct TaskManagerInner {
     /// task list
-    tasks: Vec<TaskControlBlock>,
+    pub(crate) tasks: Vec<TaskControlBlock>,
     /// id of current `Running` task
-    current_task: usize,
+    pub(crate) current_task: usize,
 }
 
 lazy_static! {
@@ -78,6 +79,10 @@ impl TaskManager {
     fn run_first_task(&self) -> ! {
         let mut inner = self.inner.exclusive_access();
         let next_task = &mut inner.tasks[0];
+        if !next_task.task_begin_mark {
+            next_task.task_begin_mark = true;
+            next_task.task_first_scheduling = get_time_ms();
+        }
         next_task.task_status = TaskStatus::Running;
         let next_task_cx_ptr = &next_task.task_cx as *const TaskContext;
         drop(inner);
@@ -141,6 +146,11 @@ impl TaskManager {
             let current = inner.current_task;
             inner.tasks[next].task_status = TaskStatus::Running;
             inner.current_task = next;
+            let next_task_bloack = &mut inner.tasks[next];
+            if !next_task_bloack.task_begin_mark {
+                next_task_bloack.task_begin_mark = true;
+                next_task_bloack.task_first_scheduling = get_time_ms();
+            }
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
             drop(inner);
@@ -153,7 +163,43 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+    /// current syscall ++ 
+    fn cnt_cursyscall_times(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].task_syscall_times[syscall_id] += 1;
+    }
+    
+    /// get total syscall times
+    fn get_cursyscall_times(&self) -> [u32; MAX_SYSCALL_NUM] {
+        let  inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].task_syscall_times.clone()
+    }
+
+    /// get first scheduling 
+    fn get_first_scheduling(&self) -> usize {
+        let  inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].task_first_scheduling
+    }
 }
+
+/// public current syscall ++
+pub fn cnt_cursyscall_times(syscall_id: usize) {
+    TASK_MANAGER.cnt_cursyscall_times(syscall_id);
+}
+
+/// public get syscall 
+pub fn get_cursyscall_times() -> [u32; MAX_SYSCALL_NUM]{
+    TASK_MANAGER.get_cursyscall_times()
+}
+
+/// public get first time
+pub fn get_first_scheduling() -> usize {
+    TASK_MANAGER.get_first_scheduling()
+}
+
 
 /// Run the first task in task list.
 pub fn run_first_task() {
