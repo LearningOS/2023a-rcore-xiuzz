@@ -471,7 +471,7 @@ pub fn mm_sys_munmap(_start: usize, _len : usize) -> isize {
     let memory_set_ref_mut = &mut inner.tasks[current].memory_set;
 
 
-    if (start_vpn.0..end_vpn.0).any(|e| memory_set_ref_mut.page_table.is_mapped(VirtPageNum::from(e))) {
+    if (start_vpn.0..end_vpn.0).any(|e| !memory_set_ref_mut.page_table.is_mapped(VirtPageNum::from(e))) {
         return -1;
     }
 
