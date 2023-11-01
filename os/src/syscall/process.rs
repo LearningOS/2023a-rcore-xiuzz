@@ -4,7 +4,7 @@ use crate::{
     task::{
         change_program_brk, exit_current_and_run_next, suspend_current_and_run_next, TaskStatus, current_user_token, cnt_cursyscall_times, get_cursyscall_times,  get_first_scheduling,
     }, 
-    timer::{get_time_us, get_time_ms},
+    timer::get_time_us,
     mm::{translated_ref_mut,mm_sys_mmap, mm_sys_munmap}, 
     syscall::{SYSCALL_EXIT, SYSCALL_YIELD, SYSCALL_GET_TIME, SYSCALL_TASK_INFO, SYSCALL_MMAP, SYSCALL_MUNMAP, SYSCALL_SBRK}
 };
@@ -71,7 +71,7 @@ pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
         *p_ti = TaskInfo {
             status: TaskStatus::Running,
             syscall_times: get_cursyscall_times(),
-            time: get_time_ms() - get_first_scheduling(),
+            time: get_time_us()/1000 - get_first_scheduling(),
         }
     }
     0
