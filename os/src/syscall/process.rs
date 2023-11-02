@@ -2,13 +2,13 @@
 use alloc::sync::Arc;
 
 use crate::{
-    config::MAX_SYSCALL_NUM,
+    config::{MAX_SYSCALL_NUM, PAGE_SIZE},
     loader::get_app_data_by_name,
-    mm::{translated_refmut, translated_str},
+    mm::{translated_refmut, translated_str, mm_sys_mmap, mm_sys_munmap},
     task::{
         add_task, current_task, current_user_token, exit_current_and_run_next,
-        suspend_current_and_run_next, TaskStatus,
-    },
+        suspend_current_and_run_next, TaskStatus, cnt_cursyscall_times, get_cursyscall_times, get_first_scheduling, TaskControlBlock,
+    }, timer::get_time_us, syscall::{SYSCALL_EXIT, SYSCALL_YIELD, SYSCALL_GETPID, SYSCALL_FORK, SYSCALL_EXEC, SYSCALL_WAITPID, SYSCALL_GET_TIME, SYSCALL_TASK_INFO, SYSCALL_MMAP, SYSCALL_MUNMAP, SYSCALL_SBRK, SYSCALL_SPAWN, SYSCALL_SET_PRIORITY},
 };
 
 #[repr(C)]
@@ -32,6 +32,7 @@ pub struct TaskInfo {
 /// task exits and submit an exit code
 pub fn sys_exit(exit_code: i32) -> ! {
     trace!("kernel:pid[{}] sys_exit", current_task().unwrap().pid.0);
+    cnt_cursyscall_times(SYSCALL_EXIT);
     exit_current_and_run_next(exit_code);
     panic!("Unreachable in sys_exit!");
 }
@@ -39,17 +40,20 @@ pub fn sys_exit(exit_code: i32) -> ! {
 /// current task gives up resources for other tasks
 pub fn sys_yield() -> isize {
     trace!("kernel:pid[{}] sys_yield", current_task().unwrap().pid.0);
+    cnt_cursyscall_times(SYSCALL_YIELD);
     suspend_current_and_run_next();
     0
 }
 
 pub fn sys_getpid() -> isize {
     trace!("kernel: sys_getpid pid:{}", current_task().unwrap().pid.0);
+    cnt_cursyscall_times(SYSCALL_GETPID);
     current_task().unwrap().pid.0 as isize
 }
 
 pub fn sys_fork() -> isize {
     trace!("kernel:pid[{}] sys_fork", current_task().unwrap().pid.0);
+    cnt_cursyscall_times(SYSCALL_FORK);
     let current_task = current_task().unwrap();
     let new_task = current_task.fork();
     let new_pid = new_task.pid.0;
@@ -65,6 +69,7 @@ pub fn sys_fork() -> isize {
 
 pub fn sys_exec(path: *const u8) -> isize {
     trace!("kernel:pid[{}] sys_exec", current_task().unwrap().pid.0);
+    cnt_cursyscall_times(SYSCALL_EXEC);
     let token = current_user_token();
     let path = translated_str(token, path);
     if let Some(data) = get_app_data_by_name(path.as_str()) {
@@ -80,6 +85,7 @@ pub fn sys_exec(path: *const u8) -> isize {
 /// Else if there is a child process but it is still running, return -2.
 pub fn sys_waitpid(pid: isize, exit_code_ptr: *mut i32) -> isize {
     trace!("kernel::pid[{}] sys_waitpid [{}]", current_task().unwrap().pid.0, pid);
+    cnt_cursyscall_times(SYSCALL_WAITPID);
     let task = current_task().unwrap();
     // find a child process
 
@@ -122,7 +128,16 @@ pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
         "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    cnt_cursyscall_times(SYSCALL_GET_TIME);
+    let us = get_time_us();
+    let p_ts : *mut TimeVal = translated_refmut(current_user_token(), _ts);
+    unsafe {
+        *p_ts = TimeVal {
+            sec: us / 1_000_000,
+            usec: us % 1_000_000,
+        };
+    }
+    0
 }
 
 /// YOUR JOB: Finish sys_task_info to pass testcases
@@ -133,7 +148,16 @@ pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
         "kernel:pid[{}] sys_task_info NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    cnt_cursyscall_times(SYSCALL_TASK_INFO);
+   let p_ti : *mut TaskInfo = translated_refmut(current_user_token(), _ti);
+    unsafe {
+        *p_ti = TaskInfo {
+            status: TaskStatus::Running,
+            syscall_times: get_cursyscall_times(),
+            time: get_time_us()/1000 - get_first_scheduling(),
+        }
+    }
+    0
 }
 
 /// YOUR JOB: Implement mmap.
@@ -142,7 +166,11 @@ pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
         "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    cnt_cursyscall_times(SYSCALL_MMAP);
+    if _start % PAGE_SIZE != 0 || _port & !0x7 != 0 || _port & 0x7 == 0{
+        return -1;
+    }
+    mm_sys_mmap(_start, _len, _port)
 }
 
 /// YOUR JOB: Implement munmap.
@@ -151,12 +179,17 @@ pub fn sys_munmap(_start: usize, _len: usize) -> isize {
         "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    cnt_cursyscall_times(SYSCALL_MUNMAP);
+    if _start % PAGE_SIZE != 0 {
+        return -1;
+    }
+    mm_sys_munmap(_start, _len) 
 }
 
 /// change data segment size
 pub fn sys_sbrk(size: i32) -> isize {
     trace!("kernel:pid[{}] sys_sbrk", current_task().unwrap().pid.0);
+    cnt_cursyscall_times(SYSCALL_SBRK);
     if let Some(old_brk) = current_task().unwrap().change_program_brk(size) {
         old_brk as isize
     } else {
@@ -168,10 +201,26 @@ pub fn sys_sbrk(size: i32) -> isize {
 /// HINT: fork + exec =/= spawn
 pub fn sys_spawn(_path: *const u8) -> isize {
     trace!(
-        "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
+        "kernel:pid[{}] sys_spasyscall_idwn NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    cnt_cursyscall_times(SYSCALL_SPAWN);
+    let name = translated_str(current_user_token(), _path);
+    let data = get_app_data_by_name(name.as_str());
+
+    if data.is_none() {
+        return -1;
+    }
+    
+    let tcb = TaskControlBlock::new(data.unwrap());
+    let fa = current_task().unwrap();
+    let mut inner = fa.inner_exclusive_access();
+    let tcb_arc = Arc::new(tcb);
+    let pid = tcb_arc.pid.0;
+    inner.children.push(Arc::clone(&tcb_arc));
+    add_task(tcb_arc);
+
+    pid as isize
 }
 
 // YOUR JOB: Set task priority.
@@ -180,5 +229,14 @@ pub fn sys_set_priority(_prio: isize) -> isize {
         "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    cnt_cursyscall_times(SYSCALL_SET_PRIORITY);
+    
+    if _prio <= 1 {
+        return -1;
+    }
+
+    let cur_task = current_task().unwrap();
+    let mut inner = cur_task.inner_exclusive_access();
+    inner.priority = _prio;
+    _prio
 }

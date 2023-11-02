@@ -21,6 +21,7 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
+use crate::config::MAX_SYSCALL_NUM;
 use crate::loader::get_app_data_by_name;
 use alloc::sync::Arc;
 use lazy_static::*;
@@ -57,6 +58,26 @@ pub fn suspend_current_and_run_next() {
 /// pid of usertests app in make run TEST=1
 pub const IDLE_PID: usize = 0;
 
+/// cnt syscall times 
+pub fn cnt_cursyscall_times(syscall_id: usize) {
+    let current = current_task().unwrap();
+    let mut inner = current.inner_exclusive_access();
+    inner.task_syscall_times[syscall_id] += 1;
+}
+
+/// get syscall times
+pub fn get_cursyscall_times() -> [u32;MAX_SYSCALL_NUM] {
+    let current = current_task().unwrap();
+    let inner = current.inner_exclusive_access();   
+    inner.task_syscall_times.clone() 
+}
+
+/// get first scheduling time
+pub fn get_first_scheduling() -> usize {
+    let current = current_task().unwrap();
+    let inner = current.inner_exclusive_access();
+    inner.task_first_scheduling
+}
 /// Exit the current 'Running' task and run the next task in task list.
 pub fn exit_current_and_run_next(exit_code: i32) {
     // take from Processor
