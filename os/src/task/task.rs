@@ -4,9 +4,9 @@ use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle, SignalActions, Sign
 use crate::{
     config::TRAP_CONTEXT_BASE,
     fs::{File, Stdin, Stdout},
-    mm::{translated_refmut, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE},
+    mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE},
     sync::UPSafeCell,
-    trap::{trap_handler, TrapContext},
+    trap::{trap_handler, TrapContext}, loaders::ElfLoader,
 };
 use alloc::{
     string::String,
@@ -207,32 +207,37 @@ impl TaskControlBlock {
         // user_sp -= user_sp % core::mem::size_of::<usize>();
 
         
-        for i in 0..args.len() {
-            user_sp -= args[i].len() + 1; 
-        }
-        let mut argv_end = user_sp;
-        user_sp -= (args.len() + 1) * core::mem::size_of::<usize>();
-        let mut argv: Vec<_> = (0..=args.len())
-            .map(|arg: usize| {
-                translated_refmut(memory_set.token(), 
-                (user_sp + arg * core::mem::size_of::<usize>()) as *mut usize)
-            })
-            .collect();
+        // for i in 0..args.len() {
+        //     user_sp -= args[i].len() + 1; 
+        // }
+        // let mut argv_end = user_sp;
+        // user_sp -= (args.len() + 1) * core::mem::size_of::<usize>();
+        // let mut argv: Vec<_> = (0..=args.len())
+        //     .map(|arg: usize| {
+        //         translated_refmut(memory_set.token(), 
+        //         (user_sp + arg * core::mem::size_of::<usize>()) as *mut usize)
+        //     })
+        //     .collect();
         
-        for i in 0..args.len() {
-            let mut p = argv_end;
-            argv_end += args[i].len() + 1;
-            *argv[i] = p;
-            for c in args[i].as_bytes() {
-                *translated_refmut(memory_set.token(), p as *mut u8) = *c;
-                p += 1;
-            }
-            *translated_refmut(memory_set.token(), p as *mut u8) = 0;
-        }
+        // for i in 0..args.len() {
+        //     let mut p = argv_end;
+        //     argv_end += args[i].len() + 1;
+        //     *argv[i] = p;
+        //     for c in args[i].as_bytes() {
+        //         *translated_refmut(memory_set.token(), p as *mut u8) = *c;
+        //         p += 1;
+        //     }
+        //     *translated_refmut(memory_set.token(), p as *mut u8) = 0;
+        // }
 
-        user_sp -= core::mem::size_of::<usize>();
-        *translated_refmut(memory_set.token(), user_sp as *mut usize) = args.len();
-        let argv_base = user_sp;
+        // user_sp -= core::mem::size_of::<usize>();
+        // *translated_refmut(memory_set.token(), user_sp as *mut usize) = args.len();
+        // let argv_base = user_sp;
+
+        let len = args.len();
+        info!("args: {:?}", args);
+        let elf_loader = ElfLoader::new(elf_data);
+        user_sp = elf_loader.unwrap().init_stack(memory_set.token(), user_sp, args);
         
         // **** access current TCB exclusively
         let mut inner = self.inner_exclusive_access();
@@ -248,8 +253,9 @@ impl TaskControlBlock {
             self.kernel_stack.get_top(),
             trap_handler as usize,
         );
-        trap_cx.x[10] = args.len();
-        trap_cx.x[11] = argv_base;
+        let avg_base = user_sp;
+        trap_cx.x[10] = len;
+        trap_cx.x[11] = avg_base;
         *inner.get_trap_cx() = trap_cx;
         // **** release current PCB
     }

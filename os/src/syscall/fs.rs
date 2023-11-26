@@ -1,8 +1,43 @@
 //! File and filesystem-related syscalls
 use crate::fs::{make_pipe, open_file, OpenFlags, Stat};
-use crate::mm::{translated_byte_buffer, translated_refmut, translated_str, UserBuffer};
+use crate::mm::{translated_byte_buffer, translated_refmut, translated_str, UserBuffer, translated_ref};
 use crate::task::{current_task, current_user_token};
 use alloc::sync::Arc;
+
+pub struct Iovec {
+    iov_base:  *const u8,
+    iov_len: usize
+}
+
+pub fn sys_writev(fd: usize,mut iov: *const Iovec, iovcnt: usize) -> isize {
+    trace!("kernel:pid[{}] sys_write", current_task().unwrap().pid.0);
+    let token = current_user_token();
+    let task = current_task().unwrap();
+    let inner = task.inner_exclusive_access();
+    if fd >= inner.fd_table.len() {
+        return -1;
+    }
+    if let Some(file) = &inner.fd_table[fd] {
+        if !file.writable() {
+            return -1;
+        }
+        let file = file.clone();
+        // release current task TCB manually to avoid multi-borrow
+        drop(inner);
+        let mut total_size = 0;
+        for _ in 0..iovcnt {
+            let ptr_iov = translated_ref(token, iov);
+            file.write(UserBuffer::new(translated_byte_buffer(token, ptr_iov.iov_base, ptr_iov.iov_len)));
+            total_size += ptr_iov.iov_len;
+            unsafe {
+                iov = iov.add(1);
+            }
+        }
+        total_size as isize
+    } else {
+        -1
+    }
+}
 
 pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
     trace!("kernel:pid[{}] sys_write", current_task().unwrap().pid.0);
